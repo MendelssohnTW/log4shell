@@ -1,5 +1,6 @@
 .vscode
 burp_file
 LDAP_Service/marshalsec
+LDAP_Service
 ngrok_tunnel
 HTTP_Service
