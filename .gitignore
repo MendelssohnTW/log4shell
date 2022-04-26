@@ -2,3 +2,5 @@
 burp_file
 LDAP_Service/marshalsec
 ngrok_tunnel
+HTTP_Service/log4jRCE.class
+HTTP_Service/log4jRCE.java
