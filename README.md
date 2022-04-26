@@ -28,14 +28,14 @@ Edit file /etc/proxychains4.conf. Add socks5  127.0.0.1 9050 to the end of file.
 ```
 echo 'socks5  127.0.0.1 9050' >> /etc/proxychains4.conf
 ```
-* Netcat required
+* Ncat required
 
 ## **Usage**
 
 This application creates an environment and automatically configures the parameters for vulnerability testing.
 It starts an LDAP server and sends requests to the vulnerable host, which can be used remotely through ngrok tunneling and also through the tor proxy.
 
-Running with the netcat listen option will also create an http server that will provide a java class for the reverse shell.
+Running with the ncat listen option will also create an http server that will provide a java class for the reverse shell.
 
 Use * in the fields where the commands must be injected.
 
