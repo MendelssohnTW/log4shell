@@ -245,8 +245,9 @@ def readfile(burp_file):
         f.close()
         commands = prepare_list_commands()
         return commands
-    except:
-        print("Error at loading file")
+    except Exception as e:
+        print("Error at loading file\n")
+        print(e)
         end()
 
 def check(list):
